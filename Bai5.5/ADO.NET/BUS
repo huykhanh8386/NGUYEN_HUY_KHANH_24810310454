@@ -1,0 +1,21 @@
+using System;
+using InventoryManagement.DAL;
+using InventoryManagement.DTO;
+
+namespace InventoryManagement.BUS
+{
+    public class InventoryBUS
+    {
+        private InventoryDAL dal = new InventoryDAL();
+
+        public void LapPhieuKho(PhieuKhoDTO phieu)
+        {
+            if (phieu.ChiTiets == null || phieu.ChiTiets.Count == 0)
+                throw new Exception("Phiếu kho phải có ít nhất 1 vật tư!");
+
+            dal.LuuPhieuKhoTransaction(phieu);
+        }
+
+        public decimal LayTongTonKho() => dal.GetTongGiaTriTonKho();
+    }
+}
