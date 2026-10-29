@@ -1,0 +1,310 @@
+
+using System;
+using System.Data;
+using MySql.Data.MySqlClient;
+
+namespace HotelManagement.DAL
+{
+    public class HotelDAL
+    {
+        public DataTable LayDuLieu(string sql)
+        {
+            using (MySqlConnection conn = Database.GetConnection())
+            {
+                MySqlDataAdapter da = new MySqlDataAdapter(sql, conn);
+                DataTable dt = new DataTable();
+                da.Fill(dt);
+                return dt;
+            }
+        }
+
+        // Tìm phiếu đang thuê theo số phòng
+        public DataTable LayPhieuDangThue()
+        {
+            string sql = @"
+                SELECT p.MaPhieu, p.SoPhong, k.HoTen, k.CCCD,
+                       p.NgayNhanPhong
+                FROM PhieuDatPhong p
+                JOIN KhachHang k ON p.MaKH = k.MaKH
+                WHERE p.NgayTraPhong IS NULL";
+
+            return LayDuLieu(sql);
+        }
+
+        // Nhận phòng
+        public string NhanPhong(
+            string soPhong, string hoTen, string cccd, string dienThoai)
+        {
+            using (MySqlConnection conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                using (MySqlTransaction tran = conn.BeginTransaction())
+                {
+                    try
+                    {
+                        string trangThai = "";
+
+                        string sqlPhong =
+                            "SELECT TrangThai FROM Phong " +
+                            "WHERE SoPhong=@phong FOR UPDATE";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlPhong, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@phong", soPhong);
+                            object kq = cmd.ExecuteScalar();
+
+                            if (kq == null)
+                                throw new Exception("Không tìm thấy phòng.");
+
+                            trangThai = kq.ToString();
+                        }
+
+                        if (trangThai != "Trống")
+                            throw new Exception("Phòng này không còn trống.");
+
+                        int maKH;
+
+                        string sqlTimKH =
+                            "SELECT MaKH FROM KhachHang WHERE CCCD=@cccd";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlTimKH, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@cccd", cccd);
+                            object kq = cmd.ExecuteScalar();
+
+                            if (kq == null)
+                            {
+                                string sqlThemKH =
+                                    "INSERT INTO KhachHang(HoTen, CCCD, SoDienThoai) " +
+                                    "VALUES(@ten, @cccd, @sdt)";
+
+                                using (MySqlCommand them = new MySqlCommand(
+                                    sqlThemKH, conn, tran))
+                                {
+                                    them.Parameters.AddWithValue("@ten", hoTen);
+                                    them.Parameters.AddWithValue("@cccd", cccd);
+                                    them.Parameters.AddWithValue("@sdt", dienThoai);
+                                    them.ExecuteNonQuery();
+                                }
+
+                                maKH = (int)new MySqlCommand(
+                                    "SELECT LAST_INSERT_ID()", conn, tran)
+                                    .ExecuteScalar();
+                            }
+                            else
+                            {
+                                maKH = Convert.ToInt32(kq);
+                            }
+                        }
+
+                        string sqlPhieu =
+                            "INSERT INTO PhieuDatPhong(SoPhong, MaKH, NgayNhanPhong) " +
+                            "VALUES(@phong, @makh, NOW())";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlPhieu, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@phong", soPhong);
+                            cmd.Parameters.AddWithValue("@makh", maKH);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        string sqlCapNhat =
+                            "UPDATE Phong SET TrangThai='Đang ở' " +
+                            "WHERE SoPhong=@phong";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlCapNhat, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@phong", soPhong);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        tran.Commit();
+                        return "Nhận phòng thành công.";
+                    }
+                    catch
+                    {
+                        tran.Rollback();
+                        throw;
+                    }
+                }
+            }
+        }
+
+        // Thêm dịch vụ cho phiếu đang thuê
+        public string ThemDichVu(int maPhieu, int maDV, int soLuong)
+        {
+            if (soLuong <= 0)
+                return "Số lượng phải lớn hơn 0.";
+
+            using (MySqlConnection conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                using (MySqlTransaction tran = conn.BeginTransaction())
+                {
+                    try
+                    {
+                        string sqlKiemTra =
+                            "SELECT COUNT(*) FROM PhieuDatPhong " +
+                            "WHERE MaPhieu=@ma AND NgayTraPhong IS NULL";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlKiemTra, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@ma", maPhieu);
+
+                            if (Convert.ToInt32(cmd.ExecuteScalar()) == 0)
+                                throw new Exception("Phiếu không còn hoạt động.");
+                        }
+
+                        string sql =
+                            "INSERT INTO SuDungDichVu(MaPhieu, MaDV, SoLuong, ThoiGian) " +
+                            "VALUES(@ma, @dv, @sl, NOW())";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sql, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@ma", maPhieu);
+                            cmd.Parameters.AddWithValue("@dv", maDV);
+                            cmd.Parameters.AddWithValue("@sl", soLuong);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        tran.Commit();
+                        return "Thêm dịch vụ thành công.";
+                    }
+                    catch
+                    {
+                        tran.Rollback();
+                        throw;
+                    }
+                }
+            }
+        }
+
+        // Trả phòng và thanh toán
+        public decimal TraPhong(int maPhieu)
+        {
+            using (MySqlConnection conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                using (MySqlTransaction tran = conn.BeginTransaction())
+                {
+                    try
+                    {
+                        string sqlThongTin = @"
+                            SELECT p.SoPhong, p.GiaTheoGio, f.NgayNhanPhong
+                            FROM PhieuDatPhong f
+                            JOIN Phong p ON f.SoPhong = p.SoPhong
+                            WHERE f.MaPhieu=@ma AND f.NgayTraPhong IS NULL
+                            FOR UPDATE";
+
+                        string soPhong;
+                        decimal giaTheoGio;
+                        DateTime nhanPhong;
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlThongTin, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@ma", maPhieu);
+
+                            using (MySqlDataReader rd = cmd.ExecuteReader())
+                            {
+                                if (!rd.Read())
+                                    throw new Exception(
+                                        "Không tìm thấy phiếu đang thuê.");
+
+                                soPhong = rd["SoPhong"].ToString();
+                                giaTheoGio = Convert.ToDecimal(rd["GiaTheoGio"]);
+                                nhanPhong = Convert.ToDateTime(rd["NgayNhanPhong"]);
+                            }
+                        }
+
+                        // Tính số giờ, tối thiểu 1 giờ, làm tròn lên
+                        double soGio = Math.Ceiling(
+                            (DateTime.Now - nhanPhong).TotalHours);
+
+                        if (soGio < 1)
+                            soGio = 1;
+
+                        decimal tienPhong = giaTheoGio * (decimal)soGio;
+
+                        string sqlDichVu = @"
+                            SELECT COALESCE(SUM(s.SoLuong * d.DonGia), 0)
+                            FROM SuDungDichVu s
+                            JOIN DichVu d ON s.MaDV = d.MaDV
+                            WHERE s.MaPhieu=@ma";
+
+                        decimal tienDichVu;
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlDichVu, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@ma", maPhieu);
+                            tienDichVu = Convert.ToDecimal(cmd.ExecuteScalar());
+                        }
+
+                        decimal tongTien = tienPhong + tienDichVu;
+
+                        string sqlCapNhatPhieu = @"
+                            UPDATE PhieuDatPhong
+                            SET NgayTraPhong=NOW(), TongTienThanhToan=@tong
+                            WHERE MaPhieu=@ma";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlCapNhatPhieu, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@tong", tongTien);
+                            cmd.Parameters.AddWithValue("@ma", maPhieu);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        string sqlCapNhatPhong =
+                            "UPDATE Phong SET TrangThai='Đang dọn dẹp' " +
+                            "WHERE SoPhong=@phong";
+
+                        using (MySqlCommand cmd = new MySqlCommand(
+                            sqlCapNhatPhong, conn, tran))
+                        {
+                            cmd.Parameters.AddWithValue("@phong", soPhong);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        tran.Commit();
+                        return tongTien;
+                    }
+                    catch
+                    {
+                        tran.Rollback();
+                        throw;
+                    }
+                }
+            }
+        }
+
+        // Đánh dấu phòng đã dọn xong
+        public void DonXong(string soPhong)
+        {
+            using (MySqlConnection conn = Database.GetConnection())
+            {
+                conn.Open();
+
+                string sql =
+                    "UPDATE Phong SET TrangThai='Trống' " +
+                    "WHERE SoPhong=@phong AND TrangThai='Đang dọn dẹp'";
+
+                using (MySqlCommand cmd = new MySqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@phong", soPhong);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+    }
+}
